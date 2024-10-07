@@ -148,7 +148,9 @@ class Reconstructor(object):
         self.scale = 7.5
         self.disentanglement_noglobal = True
     def embed_text(self, prompt):
-        text_encoding = self.net.ctx_encode([prompt], which='text')
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        text_encoding = self.net.ctx_encode(prompt, which='text')
         return text_encoding
     
     def embed_image(self, image):
