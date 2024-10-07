@@ -1,4 +1,4 @@
-matplotlib==3.4.2
+matplotlib
 pyyaml
 opencv-python
 easydict==1.9
@@ -6,14 +6,14 @@ scikit-image
 tensorboardx==2.1
 tensorboard
 lpips==0.1.3
-fsspec==2022.7.1
+fsspec
 
-tqdm==4.60.0
+tqdm
 transformers
 torchmetrics==0.7.3
 
 einops
-omegaconf==2.1.1
+omegaconf
 open_clip_torch==2.0.2
 webdataset
 huggingface-hub
