@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include versatile_diffusion/configs/model *.yaml
+recursive-include versatile_diffusion/lib/model_zoo/optimus_models/vocab *.txt
+recursive-include versatile_diffusion/lib/model_zoo/optimus_models/vocab *.json
