@@ -101,10 +101,11 @@ class adjust_rank(object):
 
 class Reconstructor(object):
     def __init__(self, fp16=True, device="cuda:0", cache_dir="../cache", ddim_steps=50, deprecated=False):
-        print("Reconstructor: Loading model... fp16: ", fp16)
+        print(f"Reconstructor: Loading model... fp16: {fp16}")
         if deprecated:
             cfgm_name = 'vd_noema'
-        cfgm_name = 'vd_four_flow_v1-0'
+        else:
+            cfgm_name = 'vd_four_flow_v1-0'
         
         cfgm = model_cfg_bank()(cfgm_name)
         cfgm['args']['vae_cfg_list'][0][1]['pth'] = f'{cache_dir}/kl-f8.pth'
@@ -123,30 +124,23 @@ class Reconstructor(object):
         else:
             self.dtype = torch.float32
             sd = torch.load(f'{cache_dir}/vd-four-flow-v1-0.pth', map_location='cpu')
-                
-            # from huggingface_hub import hf_hub_download
-            # if fp16:
-            #     temppath = hf_hub_download('shi-labs/versatile-diffusion-model', 'pretrained_pth/vd-four-flow-v1-0-fp16.pth')
-            # else:
-            #     temppath = hf_hub_download('shi-labs/versatile-diffusion-model', 'pretrained_pth/vd-four-flow-v1-0.pth')
-            # sd = torch.load(temppath, map_location='cpu')
-
-        net.load_state_dict(sd, strict=False)
-
+        
         self.device=device
-        net.to(self.device)
-        self.net = net
-        self.sampler = DDIMSampler(net)
-
         self.output_dim = [512, 512]
-
         self.ddim_steps = ddim_steps
         self.ddim_eta = 0.0
         self.image_latent_dim = 4
+        
+        net.load_state_dict(sd, strict=False)
+        self.sampler = DDIMSampler(net)
         self.sampler.make_schedule(ddim_num_steps=self.ddim_steps, ddim_eta=self.ddim_eta, verbose=False)
+
+        net.to(self.device)
+        self.net = net
         self.adjust_rank_f = adjust_rank(max_drop_rank=[1, 5], q=20)
-        self.scale = 7.5
+        self.scale = 3.5
         self.disentanglement_noglobal = True
+        
     def embed_text(self, prompt):
         if isinstance(prompt, str):
             prompt = [prompt]
@@ -156,10 +150,10 @@ class Reconstructor(object):
     def embed_image(self, image):
         if isinstance(image, PIL.Image.Image):
             image = tvtrans.ToTensor()(image)
-        image = tvtrans.Resize([512, 512], interpolation=PIL.Image.BICUBIC)(image)
+        # image = tvtrans.Resize([512, 512], interpolation=PIL.Image.BICUBIC)(image)
         if image.ndim == 3:
             image = image.unsqueeze(0)
-        image = image.to(self.device).to(self.dtype)
+        # image = image.to(self.device).to(self.dtype)
         image_encoding = self.net.ctx_encode(image, which='image')
         return image_encoding
     
