@@ -102,6 +102,7 @@ class adjust_rank(object):
 class Reconstructor(object):
     def __init__(self, fp16=True, device="cuda:0", cache_dir="../cache", ddim_steps=50, deprecated=False):
         print(f"Reconstructor: Loading model... fp16: {fp16}")
+        print("Taking new code 2.")
         if deprecated:
             cfgm_name = 'vd_noema'
         else:
@@ -190,6 +191,7 @@ class Reconstructor(object):
                 c_t = c_t.reshape((77,768)).to(dtype=torch.float16, device=self.device)
                 ut = self.net.ctx_encode([""], which='text').repeat(n_samples, 1, 1)
                 ct = c_t.repeat(n_samples, 1, 1)
+                print(ct.shape)
                 c_info_list.append({
                     'type':'text', 
                     'conditioning':ct.to(torch.float16), 
@@ -216,6 +218,136 @@ class Reconstructor(object):
                     'type':'image', 
                     'conditioning':ci.to(torch.float16), 
                     'unconditional_conditioning':torch.zeros_like(ci),
+                    'unconditional_guidance_scale':scale,
+                    'ratio': (1-textstrength), })
+                numClips +=1
+            else:
+                textstrength=1
+        if(image is not None):
+            image_tensor = tvtrans.Compose([
+                tvtrans.ToTensor(),
+                tvtrans.Resize((w, h))
+            ])(image).to(self.device).to(self.dtype)
+            if image_tensor.ndim == 3:
+                image_tensor = image_tensor.unsqueeze(0)
+        shape = [n_samples, self.image_latent_dim, h//8, w//8]
+        if(seed):
+            np.random.seed(seed)
+            torch.manual_seed(seed + 100)
+        else:
+            seed = randint(0,1000)
+            np.random.seed(seed)
+            torch.manual_seed(seed + 100)
+        if strength!=1 and image:
+            x0 = self.net.vae_encode(image_tensor, which='image').repeat(n_samples, 1, 1, 1)
+            step = int(self.ddim_steps * (strength))
+            if numClips==2:
+                x, _ = self.sampler.sample_multicontext(
+                    steps=self.ddim_steps,
+                    x_info={'type':'image', 'x0':x0, 'x0_forward_timesteps':step},
+                    c_info_list=c_info_list,
+                    shape=shape,
+                    verbose=False,
+                    eta=self.ddim_eta)
+            else:
+                x, _ = self.sampler.sample(
+                    steps=self.ddim_steps,
+                    x_info={'type':'image', 'x0':x0, 'x0_forward_timesteps':step},
+                    c_info=c_info_list[0],
+                    shape=shape,
+                    verbose=False,
+                    eta=self.ddim_eta)
+        else:
+            if numClips ==2:
+                x, _ = self.sampler.sample_multicontext(
+                    steps=self.ddim_steps,
+                    x_info={'type':'image',},
+                    c_info_list=c_info_list,
+                    shape=shape,
+                    verbose=False,
+                    eta=self.ddim_eta)
+            else:
+                x, _ = self.sampler.sample(
+                    steps=self.ddim_steps,
+                    x_info={'type':'image',},
+                    c_info=c_info_list[0],
+                    shape=shape,
+                    verbose=False,
+                    eta=self.ddim_eta)
+        imout = self.net.vae_decode(x, which='image')
+        if color_adjust:
+            cx_mean = image_tensor.view(3, -1).mean(-1)[:, None, None]
+            cx_std  = image_tensor.view(3, -1).std(-1)[:, None, None]
+            imout_mean = [imouti.view(3, -1).mean(-1)[:, None, None] for imouti in imout]
+            imout_std  = [imouti.view(3, -1).std(-1)[:, None, None] for imouti in imout]
+            imout = [(ii-mi)/si*cx_std+cx_mean for ii, mi, si in zip(imout, imout_mean, imout_std)]
+            imout = [torch.clamp(ii, 0, 1) for ii in imout]
+        imout = [tvtrans.ToPILImage()(i) for i in imout]
+        if len(imout)==1:
+            return imout[0]
+        else:
+            return imout
+
+    def reconstruct_batch(self, 
+                    image=None, 
+                    c_i=None, 
+                    c_t=None, 
+                    textstrength=0.5, 
+                    strength=1.0, 
+                    color_adjust=False,
+                    fcs_lvl=0.5, 
+                    seed=None
+                    ):
+        n_samples = c_i.shape[0] if c_i is not None else c_t.shape[0]
+        if (c_i is not None) and (c_t is not None):
+            assert (len(c_i) == len(c_t)), "Make sure the batch size of your clip text and clip image are the same"
+        numClips =0
+        h, w = 512, 512
+        BICUBIC = PIL.Image.Resampling.BICUBIC
+        
+        if strength == 0:
+            return [image]*n_samples
+        else:
+            assert (c_t is not None) or (c_i is not None)
+            c_info_list = []
+            scale = self.scale
+            if c_t is not None and textstrength != 0:
+                c_t = c_t.to(dtype=torch.float16, device=self.device)
+                ut = self.net.ctx_encode([""], which='text').repeat(n_samples, 1, 1)
+                ct = c_t
+                c_info_list.append({
+                    'type':'text', 
+                    'conditioning':ct.to(torch.float16), 
+                    'unconditional_conditioning':ut,
+                    'unconditional_guidance_scale':scale,
+                    'ratio': textstrength, })
+                numClips +=1
+            else:
+                textstrength=0
+
+            if c_i is not None and textstrength != 1:
+                c_i = c_i.to(dtype=torch.float16, device=self.device)
+                
+                if self.disentanglement_noglobal:
+                    ci_final = torch.empty(c_i.shape, dtype=torch.float16, device=self.device)
+                    for i in range(len(c_i)):
+                        ci = c_i[i]
+                        ci_glb = ci[:, 0:1]
+                        ci_loc = ci[:, 1: ]
+                        ci_loc = self.adjust_rank_f(ci_loc, fcs_lvl)
+                        ci = torch.cat([ci_glb, ci_loc], dim=1)
+                        ci_final[i,:,:] = ci
+                else:
+                    ci_final = torch.empty(c_i.shape, dtype=torch.float16, device=self.device)
+                    for i in range(len(c_i)):
+                        ci = c_i[i]
+                        ci = self.adjust_rank_f(ci, fcs_lvl)
+                        ci_final[i,:,:] = ci
+
+                c_info_list.append({
+                    'type':'image', 
+                    'conditioning':ci_final.to(torch.float16), 
+                    'unconditional_conditioning':torch.zeros_like(ci_final),
                     'unconditional_guidance_scale':scale,
                     'ratio': (1-textstrength), })
                 numClips +=1
